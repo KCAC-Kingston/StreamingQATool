@@ -56,7 +56,8 @@ WindowsHttpResult transportError(DWORD code = GetLastError())
 }
 } // namespace
 
-WindowsHttpResult windowsHttpRequest(const QUrl &url, const QByteArray &method, const QByteArray &apiKey, int timeoutMs)
+WindowsHttpResult windowsHttpRequest(const QUrl &url, const QByteArray &method, const QByteArray &apiKey, int timeoutMs,
+				     const QByteArray &payload, const QByteArray &contentType)
 {
 	QElapsedTimer deadline;
 	deadline.start();
@@ -89,10 +90,10 @@ WindowsHttpResult windowsHttpRequest(const QUrl &url, const QByteArray &method, 
 	DWORD autoLogon = WINHTTP_AUTOLOGON_SECURITY_LEVEL_HIGH;
 	if (!WinHttpSetOption(request, WINHTTP_OPTION_AUTOLOGON_POLICY, &autoLogon, sizeof(autoLogon)))
 		return transportError();
-	const auto headers =
-		(QString("Content-Type: application/json\r\nX-API-Key: ") + QString::fromUtf8(apiKey) + "\r\n")
-			.toStdWString();
-	QByteArray body = method == "POST" ? QByteArray("{}") : QByteArray();
+	const auto headers = (QString("Content-Type: ") + QString::fromLatin1(contentType) +
+			      "\r\nX-API-Key: " + QString::fromUtf8(apiKey) + "\r\n")
+				     .toStdWString();
+	QByteArray body = method == "POST" ? payload : QByteArray();
 	if (!WinHttpSendRequest(request, headers.c_str(), DWORD(headers.size()), body.isEmpty() ? nullptr : body.data(),
 				DWORD(body.size()), DWORD(body.size()), 0) ||
 	    !WinHttpReceiveResponse(request, nullptr))

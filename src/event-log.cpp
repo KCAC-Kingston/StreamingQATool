@@ -71,7 +71,7 @@ void EventLog::configure(int retainDays)
 void EventLog::append(const QString &source, const QString &event, const QJsonObject &details,
 		      const QDateTime &timestamp)
 {
-	if (event == "prestart.requested") {
+	if (event == "prestart.requested" || (event == "youtube.streaming.started" && streamFile.isEmpty())) {
 		if (!streamFile.isEmpty())
 			append("application", "stream.interrupted", {{"reason", "New Prestart attempt"}});
 		streamFile = newLogName("stream");
@@ -125,8 +125,13 @@ void EventLog::append(const QString &source, const QString &event, const QJsonOb
 		emit storageError(lastError);
 	}
 	emit entryAdded(line);
-	if (event == "stream.interrupted" || (streamObsEnded && (!streamRemoteExpected || streamRemoteEnded)))
+	if (event == "stream.interrupted")
 		streamFile.clear();
+	else if (!streamFile.isEmpty() && streamObsEnded && (!streamRemoteExpected || streamRemoteEnded)) {
+		const auto completed = streamFile;
+		streamFile.clear();
+		emit streamCompleted(completed);
+	}
 }
 
 void EventLog::prune()
@@ -136,7 +141,8 @@ void EventLog::prune()
 	const QRegularExpression pattern(
 		"^streamingqa-(?:(?:run|stream)-)?(\\d{4}-\\d{2}-\\d{2})(?:_\\d{9}-[0-9a-f]{8})?\\.jsonl$");
 	for (const auto &file : dir.entryInfoList({"streamingqa-*.jsonl"}, QDir::Files | QDir::NoSymLinks)) {
-		if (file.fileName() == runFile || file.fileName() == streamFile)
+		if (file.fileName() == runFile || file.fileName() == streamFile ||
+		    protectedFiles.contains(file.fileName()))
 			continue;
 		const auto match = pattern.match(file.fileName());
 		const auto date = QDate::fromString(match.captured(1), Qt::ISODate);
@@ -149,4 +155,40 @@ void EventLog::prune()
 				emit storageError("Could not remove an expired event log: " + file.fileName());
 		}
 	}
+}
+
+QString EventLog::resumeStream(const QString &filename)
+{
+	static const QRegularExpression allowed("^streamingqa-stream-[0-9-]+_[0-9]{9}-[0-9a-f]{8}\\.jsonl$");
+	const QFileInfo info(QDir(directory).filePath(filename));
+	if (!allowed.match(filename).hasMatch() || info.isSymLink() || !info.isFile())
+		return "Saved stream log is missing or invalid.";
+	QFile file(info.absoluteFilePath());
+	if (!file.open(QIODevice::ReadWrite))
+		return "Cannot reopen saved stream log.";
+	if (file.size() > 0) {
+		const qint64 start = qMax(qint64(0), file.size() - 8192);
+		file.seek(start);
+		const auto tail = file.readAll();
+		if (!tail.endsWith('\n')) {
+			const auto newline = tail.lastIndexOf('\n');
+			if (!file.resize(newline < 0 ? start : start + newline + 1))
+				return "Cannot repair interrupted log record.";
+		}
+	}
+	streamFile = filename;
+	streamObsEnded = streamRemoteEnded = false;
+	streamRemoteExpected = true;
+	return {};
+}
+
+void EventLog::finishStream()
+{
+	if (streamFile.isEmpty())
+		return;
+	append("session", "completed");
+	const QString file = streamFile;
+	streamFile.clear();
+	if (!file.isEmpty())
+		emit streamCompleted(file);
 }

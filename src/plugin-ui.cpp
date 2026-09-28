@@ -5,6 +5,11 @@
 #include "log-window.h"
 #include "marker-monitor.h"
 #include "camera-assist.h"
+#include "live-session.h"
+#include "rtmp-monitor.h"
+#include <QDir>
+#include <QFrame>
+#include <QEvent>
 #include "openlp-monitor.h"
 #include "companion-monitor.h"
 #include <obs-module.h>
@@ -27,6 +32,8 @@ QPointer<QWidget> panel;
 QPointer<SettingsDialog> dialog;
 QPointer<LiveControl> live_control;
 QPointer<EventLog> event_log;
+QPointer<LiveSession> live_session;
+QPointer<RtmpMonitor> rtmp_monitor;
 QPointer<LogWindow> log_window;
 QPointer<MarkerMonitor> marker_monitor;
 QPointer<CameraAssist> camera_assist;
@@ -46,10 +53,15 @@ QString current_scene_name()
 
 void frontend_event(enum obs_frontend_event event, void *)
 {
+	if (event == OBS_FRONTEND_EVENT_FINISHED_LOADING && rtmp_monitor)
+		rtmp_monitor->start();
 	if (event == OBS_FRONTEND_EVENT_EXIT) {
+		delete rtmp_monitor.data();
 		delete marker_monitor.data();
 		return;
 	}
+	if (event == OBS_FRONTEND_EVENT_STREAMING_STARTING && rtmp_monitor)
+		rtmp_monitor->refresh();
 	QString name;
 	QJsonObject details;
 	if (event == OBS_FRONTEND_EVENT_STREAMING_STARTED)
@@ -98,6 +110,10 @@ void apply_settings()
 		live_control->configure(values["serviceManagerHost"].toString(),
 					values["serviceManagerApiKey"].toString(),
 					values["endStreamingDelay"].toString().toInt());
+	if (live_session)
+		live_session->configure(values["serviceManagerEnabled"].toBool(true),
+					values["serviceManagerHost"].toString(),
+					values["serviceManagerApiKey"].toString());
 	event_log->configure(values["logRetentionDays"].toString().toInt());
 	openlp->configure(values["openlpHost"].toString(), values["openlpPort"].toString().toInt(),
 			  values["openlpVersion"].toString(), values["openlpEnabled"].toBool(true));
@@ -112,6 +128,54 @@ void apply_settings()
 		camera_assist->sceneChanged(current_scene_name());
 	applied = values;
 }
+
+class RecoveryCard : public QFrame {
+public:
+	QLabel *text;
+	QPushButton *recover, *dismiss;
+	explicit RecoveryCard(QWidget *parent) : QFrame(parent)
+	{
+		setObjectName("recoveryCard");
+		setAttribute(Qt::WA_StyledBackground, true);
+		setStyleSheet(
+			"QFrame#recoveryCard { background: palette(window); border: 2px solid #558dcc; border-radius: 5px; } QFrame#recoveryCard QLabel { background: transparent; color: palette(window-text); }");
+		auto *layout = new QVBoxLayout(this);
+		layout->setContentsMargins(10, 10, 10, 10);
+		text = new QLabel(this);
+		text->setWordWrap(true);
+		text->setTextFormat(Qt::PlainText);
+		layout->addWidget(text);
+		auto *row = new QHBoxLayout;
+		recover = new QPushButton("Recover stream", this);
+		dismiss = new QPushButton("Dismiss", this);
+		row->addWidget(recover);
+		row->addWidget(dismiss);
+		layout->addLayout(row);
+		parent->installEventFilter(this);
+		hide();
+	}
+	void position()
+	{
+		setFixedWidth(qMax(160, parentWidget()->width() - 12));
+		layout()->invalidate();
+		setFixedHeight(layout()->totalHeightForWidth(width()));
+		move(6, 32);
+	}
+	void prompt(const QString &service)
+	{
+		text->setText("YouTube service is unfinished: " + service +
+			      "\nRestart OBS streaming and recover this service?");
+		show();
+		position();
+		raise();
+	}
+	bool eventFilter(QObject *object, QEvent *event) override
+	{
+		if (object == parentWidget() && event->type() == QEvent::Resize && !isHidden())
+			position();
+		return QFrame::eventFilter(object, event);
+	}
+};
 
 void show_settings()
 {
@@ -172,11 +236,7 @@ void streaming_qa_create_panel(void)
 	layout->setContentsMargins(6, 6, 6, 6);
 	layout->setSpacing(4);
 	auto *header = new QHBoxLayout;
-	auto *title = new QLabel("StreamingQATool", widget);
-	auto font = title->font();
-	font.setBold(true);
-	title->setFont(font);
-	header->addWidget(title, 1);
+	header->setSpacing(4);
 	layout->addLayout(header);
 	EncoderControl encoder;
 	encoder.active = []() {
@@ -213,13 +273,48 @@ void streaming_qa_create_panel(void)
 		obs_frontend_streaming_stop();
 	};
 	live_control = new LiveControl(std::move(encoder), widget);
+	live_control->placeServiceSelector(header);
 	layout->addWidget(live_control);
 	event_log = new EventLog(settings.logFolder(), widget);
+	live_session =
+		new LiveSession(*event_log, QDir(settings.logFolder()).filePath("../session-state.json"), widget);
+	live_session->restore = [](const QString &id, const QJsonObject &body) {
+		return live_control ? live_control->recoverService(id, body) : QString("Live controls unavailable.");
+	};
+	auto *recoveryCard = new RecoveryCard(widget);
+	QObject::connect(live_session, &LiveSession::recoveryPrompt, recoveryCard,
+			 [recoveryCard](const QString &service) { recoveryCard->prompt(service); });
+	QObject::connect(live_session, &LiveSession::hideRecovery, recoveryCard, &QWidget::hide);
+	QObject::connect(recoveryCard->recover, &QPushButton::clicked, live_session, &LiveSession::recover);
+	QObject::connect(recoveryCard->dismiss, &QPushButton::clicked, live_session, &LiveSession::dismissRecovery);
+	auto *recoveryNotice = new QLabel(widget);
+	recoveryNotice->setWordWrap(true);
+	recoveryNotice->setTextFormat(Qt::PlainText);
+	recoveryNotice->hide();
+	layout->addWidget(recoveryNotice);
+	auto *retryUpload = new QPushButton("Retry recovery / log upload", widget);
+	retryUpload->hide();
+	layout->addWidget(retryUpload);
+	QObject::connect(live_session, &LiveSession::notice, widget,
+			 [recoveryNotice, retryUpload](const QString &text) {
+				 recoveryNotice->setText(text);
+				 recoveryNotice->setVisible(!text.isEmpty());
+				 retryUpload->setVisible(!text.isEmpty() && text != "Service log uploaded." &&
+							 !text.startsWith("Service recovered;"));
+			 });
+	QObject::connect(retryUpload, &QPushButton::clicked, live_session, &LiveSession::retry);
+	rtmp_monitor = new RtmpMonitor(widget);
+	QObject::connect(rtmp_monitor, &RtmpMonitor::event, widget, [](const QString &name, const QJsonObject &data) {
+		if (event_log)
+			event_log->append("obs", name, data);
+	});
 	openlp = new OpenLpMonitor(widget);
 	companion = new CompanionMonitor(widget);
 	live_control->eventSink = [](const QString &name, const QJsonObject &details) {
 		if (event_log)
 			event_log->append("live-control", name, details);
+		if (live_session)
+			live_session->observe(name, details);
 	};
 	auto *storage = new QLabel(widget);
 	storage->setWordWrap(true);
@@ -296,6 +391,8 @@ void streaming_qa_create_panel(void)
 			return {};
 		},
 		widget);
+	camera_assist->setActionArea(live_control->findChild<QPushButton *>("primaryAction"),
+				     live_control->findChild<QToolButton *>("overrides"));
 	camera_assist->eventSink = [](const QString &name, const QJsonObject &data) {
 		if (event_log)
 			event_log->append("camera-assist", name, data);
@@ -325,32 +422,25 @@ void streaming_qa_create_panel(void)
 				 markerStatus->setText(state);
 				 markerStatus->setVisible(state != "Marker reader: watching program output");
 			 });
-	auto *markerStats = new QLabel("Marker: None\nAppear: 0 | Disappear: 0 | Reads: 0/0", widget);
+	auto *markerStats = new QLabel("Marker: None", widget);
 	markerStats->setObjectName("markerStats");
 	markerStats->setTextFormat(Qt::PlainText);
 	markerStats->setWordWrap(true);
-	markerStats->setToolTip(
-		"Counts since OBS started. A valid reading passes marker checksum validation; appearance requires three matching readings.");
+	markerStats->setToolTip("Current marker on program output.");
 	layout->addWidget(markerStats);
-	QObject::connect(marker_monitor, &MarkerMonitor::statisticsChanged, markerStats,
-			 [markerStats](const QJsonObject &stats) {
-				 const auto marker = stats["marker"].toObject();
-				 QString current = marker.isEmpty() ? "None" : marker["section"].toString();
-				 if (marker.contains("serviceDate"))
-					 current += " | " + marker["serviceDate"].toString() + " " +
-						    marker["serviceKind"].toString();
-				 markerStats->setToolTip("Last seen: " +
-							 (stats["lastSeen"].toString().isEmpty()
-								  ? "Never"
-								  : stats["lastSeen"].toString()) +
-							 "\nCounts since OBS started. Reads = valid / sampled frames.");
-				 markerStats->setText(QString("Marker: %1\nAppear: %2 | Disappear: %3 | Reads: %4/%5")
-							      .arg(current)
-							      .arg(stats["appearances"].toInteger())
-							      .arg(stats["disappearances"].toInteger())
-							      .arg(stats["valid"].toInteger())
-							      .arg(stats["samples"].toInteger()));
-			 });
+	QObject::connect(
+		marker_monitor, &MarkerMonitor::statisticsChanged, markerStats,
+		[markerStats](const QJsonObject &stats) {
+			const auto marker = stats["marker"].toObject();
+			QString current = marker.isEmpty() ? "None" : marker["section"].toString();
+			if (marker.contains("serviceDate"))
+				current += " | " + marker["serviceDate"].toString() + " " +
+					   marker["serviceKind"].toString();
+			markerStats->setToolTip(
+				"Last seen: " +
+				(stats["lastSeen"].toString().isEmpty() ? "Never" : stats["lastSeen"].toString()) + "");
+			markerStats->setText("Marker: " + current);
+		});
 	QObject::connect(marker_monitor, &MarkerMonitor::event, widget,
 			 [](const QString &name, const QJsonObject &data, const QDateTime &time) {
 				 if (event_log)
@@ -377,6 +467,8 @@ void streaming_qa_destroy_panel(void)
 	if (callback_registered)
 		obs_frontend_remove_event_callback(frontend_event, nullptr);
 	callback_registered = false;
+	delete live_session.data();
+	delete rtmp_monitor.data();
 	delete marker_monitor.data();
 	delete log_window.data();
 	delete dialog.data();

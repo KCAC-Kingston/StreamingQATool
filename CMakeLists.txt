@@ -39,7 +39,7 @@ endif()
 
 target_sources(
   ${CMAKE_PROJECT_NAME}
-  PRIVATE src/marker-regions.cpp src/marker-regions.h src/camera-assist.cpp src/camera-assist.h src/marker-decoder.cpp src/marker-decoder.h src/marker-tracker.cpp src/marker-tracker.h
+  PRIVATE src/live-session.cpp src/live-session.h src/rtmp-monitor.cpp src/rtmp-monitor.h src/marker-regions.cpp src/marker-regions.h src/camera-assist.cpp src/camera-assist.h src/marker-decoder.cpp src/marker-decoder.h src/marker-tracker.cpp src/marker-tracker.h
           src/marker-monitor.cpp src/marker-monitor.h
           src/event-format.cpp src/event-log.cpp src/event-log.h src/log-window.cpp src/log-window.h
           src/local-websocket.cpp src/local-websocket.h

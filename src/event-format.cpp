@@ -13,10 +13,10 @@ QJsonObject EventFormat::details(const QString &event, const QJsonObject &input)
 {
 	QJsonObject output;
 	// Keep useful, stable fields for later database storage, without transport metadata.
-	const QStringList fields{"section",      "serviceDate",  "serviceKind", "elapsedMs",    "serviceId",
-				 "serviceTitle", "serviceItem",  "slide",       "scene",        "page",
-				 "row",          "column",       "reason",      "delaySeconds", "command",
-				 "retry",        "skippedDelay", "message"};
+	const QStringList fields{"code",      "section",      "serviceDate",  "serviceKind", "elapsedMs",
+				 "serviceId", "serviceTitle", "serviceItem",  "slide",       "scene",
+				 "page",      "row",          "column",       "reason",      "delaySeconds",
+				 "command",   "retry",        "skippedDelay", "message"};
 	for (const auto &key : fields) {
 		if (!input.contains(key))
 			continue;
@@ -34,6 +34,16 @@ QJsonObject EventFormat::details(const QString &event, const QJsonObject &input)
 
 QString EventFormat::text(const QString &source, const QString &event, const QJsonObject &d)
 {
+	if (event == "service.recovered")
+		return "Recovered service: " + d["serviceTitle"].toString() + " (#" + d["serviceId"].toString() + ")";
+	if (source == "recovery")
+		return "Recovery: " + event + " | Service " + d["serviceId"].toString();
+	if (source == "upload")
+		return "Log upload: " + event + " | Service " + d["serviceId"].toString();
+	if (event == "rtmp.disconnected")
+		return "RTMP disconnected: " + d["reason"].toString();
+	if (event == "rtmp.reconnected")
+		return "RTMP reconnected";
 	if (source == "camera-assist")
 		return "Camera Assist: " + event + " | " + d["scene"].toString();
 	const QString label = source == "openlp"      ? "OpenLP"

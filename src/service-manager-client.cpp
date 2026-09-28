@@ -107,7 +107,8 @@ void ServiceManagerClient::configure(const QString &host, const QString &key)
 	apiKey = key.trimmed().toUtf8();
 }
 
-void ServiceManagerClient::request(const QString &path, const QByteArray &method, Success success, Failure failure)
+void ServiceManagerClient::request(const QString &path, const QByteArray &method, Success success, Failure failure,
+				   const QByteArray &body, const QByteArray &contentType)
 {
 	if (!validHost(baseUrl) || apiKey.isEmpty() || apiKey.contains('\r') || apiKey.contains('\n')) {
 		failure({"Set a valid Service Manager host and API key in Settings.", false});
@@ -118,8 +119,9 @@ void ServiceManagerClient::request(const QString &path, const QByteArray &method
 	const QByteArray key = apiKey;
 	const int timeout = timeoutMs;
 	auto result = std::make_shared<WindowsHttpResult>();
-	auto *worker = QThread::create(
-		[url, method, key, timeout, result]() { *result = windowsHttpRequest(url, method, key, timeout); });
+	auto *worker = QThread::create([url, method, key, timeout, result, body, contentType]() {
+		*result = windowsHttpRequest(url, method, key, timeout, body, contentType);
+	});
 	worker->setParent(this);
 	workers.append(worker);
 	connect(worker, &QThread::finished, this, [this, worker, result, success, failure]() {
@@ -130,7 +132,9 @@ void ServiceManagerClient::request(const QString &path, const QByteArray &method
 			return;
 		}
 		if (result->status < 200 || result->status >= 300) {
-			failure(describeHttpError(result->status));
+			auto error = describeHttpError(result->status);
+			error.status = result->status;
+			failure(error);
 			return;
 		}
 		QJsonParseError error;
@@ -145,11 +149,11 @@ void ServiceManagerClient::request(const QString &path, const QByteArray &method
 #else
 	QNetworkRequest request{QUrl(baseUrl + path)};
 	request.setRawHeader("X-API-Key", apiKey);
-	request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+	request.setHeader(QNetworkRequest::ContentTypeHeader, contentType);
 	// Never forward a credential to a redirect destination or ignore TLS errors.
 	request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
 	request.setTransferTimeout(timeoutMs);
-	auto *reply = method == "POST" ? network.post(request, QByteArray("{}")) : network.get(request);
+	auto *reply = method == "POST" ? network.post(request, body) : network.get(request);
 	QTimer::singleShot(timeoutMs, reply, [reply]() {
 		if (!reply->isFinished()) {
 			reply->setProperty("timedOut", true);
@@ -166,7 +170,9 @@ void ServiceManagerClient::request(const QString &path, const QByteArray &method
 		reply->deleteLater();
 		const int code = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
 		if (reply->error() != QNetworkReply::NoError || code < 200 || code >= 300) {
-			failure(describeError(reply));
+			auto error = describeError(reply);
+			error.status = code;
+			failure(error);
 			return;
 		}
 		QJsonParseError error;

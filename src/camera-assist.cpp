@@ -30,6 +30,15 @@ CameraAssist::CameraAssist(SwitchScene callback, QWidget *parent) : QFrame(paren
 	accept->setObjectName("cameraAssistSwitch");
 	auto *close = new QPushButton("Dismiss", this);
 	close->setObjectName("cameraAssistDismiss");
+	// OBS themes can cap ordinary buttons at a single line. Reserve two lines
+	// explicitly so the countdown remains visible in every prompt state.
+	const int buttonHeight = fontMetrics().lineSpacing() * 2 + 12;
+	const QString buttonStyle =
+		QString("QPushButton { min-height: %1px; max-height: %1px; padding: 4px 6px; }").arg(buttonHeight);
+	accept->setStyleSheet(buttonStyle);
+	close->setStyleSheet(buttonStyle);
+	accept->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+	close->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
 	row->addWidget(accept);
 	row->addWidget(close);
 	layout->addLayout(row);
@@ -44,6 +53,16 @@ CameraAssist::CameraAssist(SwitchScene callback, QWidget *parent) : QFrame(paren
 	connect(&timer, &QTimer::timeout, this, &CameraAssist::updateCountdown);
 	parent->installEventFilter(this);
 	hide();
+}
+
+void CameraAssist::setActionArea(QWidget *primary, QWidget *overrides)
+{
+	primaryAction = primary;
+	overrideAction = overrides;
+	if (primary)
+		primary->installEventFilter(this);
+	if (overrides)
+		overrides->installEventFilter(this);
 }
 
 void CameraAssist::configure(bool on, const QString &slideScene, const QString &cameraScene, int seconds)
@@ -116,9 +135,8 @@ void CameraAssist::prompt(bool returnToSlides)
 void CameraAssist::updateCountdown()
 {
 	const int remaining = qMax(0, delay - int(elapsed.elapsed() / 1000));
-	message->setText(QString("Sermon ended. Switch to \"%1\"?\nAuto-switch in %2s. Dismiss to stay here.")
-				 .arg(slides)
-				 .arg(remaining));
+	message->setText(QString("Sermon ended. Switch to \"%1\"? Dismiss to stay here.").arg(slides));
+	accept->setText(QString("Switch to slides now\nAuto-switch in %1s").arg(remaining));
 	if (remaining == 0)
 		apply(true);
 }
@@ -133,6 +151,7 @@ void CameraAssist::apply(bool automatic)
 	const QString target = returning ? slides : camera;
 	const QString error = switchScene(target);
 	if (!error.isEmpty()) {
+		accept->setText(returning ? "Retry switch to slides" : "Retry switch to camera");
 		message->setText(error + "\nAutomatic switching stopped.");
 		if (eventSink)
 			eventSink("error", {{"scene", target}, {"message", error}});
@@ -148,18 +167,26 @@ void CameraAssist::apply(bool automatic)
 
 void CameraAssist::position()
 {
-	const int width = qMax(160, parentWidget()->width() - 12);
+	QRect area(6, 32, qMax(160, parentWidget()->width() - 12), 0);
+	if (primaryAction && overrideAction && primaryAction->isVisible() && overrideAction->isVisible()) {
+		area = QRect(primaryAction->mapTo(parentWidget(), QPoint()), primaryAction->size());
+		area = area.united(QRect(overrideAction->mapTo(parentWidget(), QPoint()), overrideAction->size()));
+	}
+	const int width = area.width();
 	setFixedWidth(width);
 	layout()->invalidate();
 	const int height = layout()->hasHeightForWidth() ? layout()->totalHeightForWidth(width) : sizeHint().height();
-	setFixedHeight(height);
+	setFixedHeight(qMax(height, area.height()));
 	layout()->activate();
-	move(6, 32);
+	move(area.topLeft());
 }
 
 bool CameraAssist::eventFilter(QObject *object, QEvent *event)
 {
-	if (object == parentWidget() && event->type() == QEvent::Resize && !isHidden())
+	if ((object == parentWidget() || object == primaryAction || object == overrideAction) &&
+	    (event->type() == QEvent::Resize || event->type() == QEvent::Move ||
+	     event->type() == QEvent::LayoutRequest) &&
+	    !isHidden())
 		position();
 	return QFrame::eventFilter(object, event);
 }

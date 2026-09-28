@@ -2,6 +2,7 @@
 #include "request-policy.h"
 
 #include <QLabel>
+#include <QDateTime>
 
 int LiveControl::pollInterval() const
 {
@@ -26,6 +27,7 @@ void LiveControl::request(const QString &path, const QByteArray &method, Result 
 	if (!featureEnabled || busy || baseUrl.isEmpty())
 		return;
 	busy = true;
+	retryDeadline = 0;
 	poll.stop();
 	render();
 	const bool command = method == "POST" && (path.endsWith("/start") || path.endsWith("/end"));
@@ -37,6 +39,7 @@ void LiveControl::attemptRequest(const QString &path, const QByteArray &method, 
 {
 	if (!featureEnabled || token != generation)
 		return;
+	retryDeadline = 0;
 	// A local stop/override during a retry must not start YouTube afterward.
 	if (method == "POST" && path.endsWith("/start") && (!encoder.active() || !encoderMatches())) {
 		busy = false;
@@ -62,7 +65,8 @@ void LiveControl::attemptRequest(const QString &path, const QByteArray &method, 
 				const int retry = RequestPolicy::commandRetries - retriesLeft + 1;
 				logEvent("youtube.command.retry",
 					 {{"command", path.endsWith("/start") ? "start" : "end"}, {"retry", retry}});
-				message->setText(QString("%1 Retrying %2 in 1 second (%3/%4)...")
+				retryDeadline = QDateTime::currentMSecsSinceEpoch() + RequestPolicy::retryDelayMs;
+				message->setText(QString("%1 Retrying %2 (%3/%4)...")
 							 .arg(error.message, path.endsWith("/start") ? "Start" : "End")
 							 .arg(retry)
 							 .arg(RequestPolicy::commandRetries));
@@ -79,7 +83,9 @@ void LiveControl::attemptRequest(const QString &path, const QByteArray &method, 
 			// After an uncertain command result, continue reading status to discover
 			// whether YouTube acted. Never replay another command after this limit.
 			pollingPaused = !command && !error.retryable;
-			fail(error.message + (command ? " Command failed after 3 retries." : QString()) +
+			fail(error.message +
+			     (command ? QString(" Command failed after %1 retries.").arg(RequestPolicy::commandRetries)
+				      : QString()) +
 			     " OBS has not been stopped. You can retry or use the stop overrides.");
 		});
 }

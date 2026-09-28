@@ -12,6 +12,7 @@ class QToolButton;
 class QComboBox;
 class QLabel;
 class QPushButton;
+class QHBoxLayout;
 
 // OBS operations are injected so the complete workflow can be tested without
 // starting a real encoder or publishing a YouTube broadcast.
@@ -26,8 +27,10 @@ class LiveControl : public QWidget {
 public:
 	LiveControl(EncoderControl encoder, QWidget *parent = nullptr);
 	void configure(const QString &host, const QString &apiKey, int endDelaySeconds = 30);
+	QString recoverService(const QString &id, const QJsonObject &body);
 	void refreshStatus();
 	void setServiceManagerEnabled(bool enabled);
+	void placeServiceSelector(QHBoxLayout *toolbar);
 	bool sessionActive() const;
 	std::function<void(const QString &, const QJsonObject &)> eventSink;
 
@@ -61,6 +64,7 @@ private:
 	QTimer encoderWatch;
 	QTimer prestartTimeout;
 	QComboBox *services;
+	QWidget *serviceSelector;
 	QPushButton *refresh;
 	QPushButton *studio;
 	QPushButton *youtube;
@@ -88,4 +92,5 @@ private:
 	QElapsedTimer endDelay;
 	int endDelaySeconds = 30;
 	qint64 startDeadline = 0;
+	qint64 retryDeadline = 0;
 };

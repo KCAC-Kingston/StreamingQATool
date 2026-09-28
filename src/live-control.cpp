@@ -36,11 +36,20 @@ LiveControl::LiveControl(EncoderControl control, QWidget *parent) : QWidget(pare
 		button->setObjectName(name);
 		return button;
 	};
-	refresh = addButton("Refresh", "refreshServices");
-	auto *serviceRow = new QHBoxLayout;
+	refresh = addButton("", "refreshServices");
+	refresh->setText(QStringLiteral("\u21bb"));
+	refresh->setAccessibleName("Refresh services");
+	refresh->setToolTip("Refresh services");
+	refresh->setFixedSize(26, 26);
+	refresh->setStyleSheet("padding: 0px; min-height: 0px;");
+	serviceSelector = new QWidget(this);
+	serviceSelector->setMinimumWidth(0);
+	auto *serviceRow = new QHBoxLayout(serviceSelector);
+	serviceRow->setContentsMargins(0, 0, 0, 0);
+	serviceRow->setSpacing(4);
 	serviceRow->addWidget(services, 1);
 	serviceRow->addWidget(refresh);
-	layout->addLayout(serviceRow);
+	layout->addWidget(serviceSelector);
 	studio = addButton("Live Control Panel", "openStudio");
 	youtube = addButton("YouTube", "openYouTube");
 	auto *links = new QHBoxLayout;
@@ -48,8 +57,13 @@ LiveControl::LiveControl(EncoderControl control, QWidget *parent) : QWidget(pare
 	links->addWidget(youtube, 1);
 	layout->addLayout(links);
 	primary = addButton("Prestart", "primaryAction");
+	primary->setFixedHeight(76);
+	primary->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
 	overrides = new QToolButton(this);
 	overrides->setObjectName("overrides");
+	overrides->setFixedHeight(32);
+	overrides->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+	overrides->setToolButtonStyle(Qt::ToolButtonTextOnly);
 	overrides->setPopupMode(QToolButton::MenuButtonPopup);
 	auto *menu = new QMenu(overrides);
 	cancel = menu->addAction("Cancel Prestart");
@@ -59,10 +73,8 @@ LiveControl::LiveControl(EncoderControl control, QWidget *parent) : QWidget(pare
 	stopOverride = menu->addAction("Stop OBS Now");
 	stopOverride->setObjectName("stopObsNow");
 	overrides->setMenu(menu);
-	auto *actions = new QHBoxLayout;
-	actions->addWidget(primary, 1);
-	actions->addWidget(overrides);
-	layout->addLayout(actions);
+	layout->addWidget(primary);
+	layout->addWidget(overrides);
 	summary = new QLabel(this);
 	summary->setObjectName("streamSummary");
 	summary->setWordWrap(true);
@@ -156,7 +168,7 @@ LiveControl::LiveControl(EncoderControl control, QWidget *parent) : QWidget(pare
 	connect(&encoderWatch, &QTimer::timeout, this, [this]() {
 		if (endWaiting) {
 			const int remaining = qMax(0, endDelaySeconds - int(endDelay.elapsed() / 1000));
-			message->setText(QString("Ending in %1s. OBS stays on until YouTube ends.").arg(remaining));
+			message->setText("OBS stays on until YouTube ends.");
 			if (remaining == 0 && !busy)
 				endNow();
 		}
@@ -168,6 +180,10 @@ LiveControl::LiveControl(EncoderControl control, QWidget *parent) : QWidget(pare
 			starting = false;
 			managed = false;
 			fail("OBS did not start within 30 seconds. Check the OBS log and retry Prestart.");
+		}
+		if (finished() && !encoder.active() && !busy) {
+			logEvent("service.completed");
+			loadServices();
 		}
 		render();
 	});
@@ -408,7 +424,7 @@ void LiveControl::transition(const QString &action)
 		endRequested = true;
 		endWaiting = true;
 		endDelay.start();
-		message->setText(QString("Ending in %1s. Override to skip delay.").arg(endDelaySeconds));
+		message->setText("OBS stays on until YouTube ends. Override to skip delay.");
 		render();
 		if (endDelaySeconds == 0)
 			endNow();
@@ -472,13 +488,42 @@ void LiveControl::render()
 	else if (startRequested)
 		primaryText = "Starting YouTube...";
 	else if (starting)
-		primaryText = "Starting OBS...";
+		primaryText = QString("Starting OBS... (%1s)")
+				      .arg(qMax(qint64(0),
+						(startDeadline - QDateTime::currentMSecsSinceEpoch() + 999) / 1000));
 	else if (active && encoderMatches())
 		primaryText = status["canStart"].toBool() ? "Start Streaming" : "Waiting for YouTube...";
 	else if (busy)
 		primaryText = "Loading...";
+	else if (baseUrl.isEmpty())
+		primaryText = "Configure Service Manager";
+	else if (serviceId.isEmpty())
+		primaryText = "Select a service";
+	else if (!fresh)
+		primaryText = "Refresh to reconnect";
+	if (busy && retryDeadline > QDateTime::currentMSecsSinceEpoch())
+		primaryText = QString("Retrying %1 in %2s")
+				      .arg(endRequested ? "End" : "Start")
+				      .arg((retryDeadline - QDateTime::currentMSecsSinceEpoch() + 999) / 1000);
+	if (prestartTimeout.isActive() && !live() && !endRequested) {
+		const int seconds = (prestartTimeout.remainingTime() + 999) / 1000;
+		primaryText +=
+			QString("\nAuto-cancel in %1:%2").arg(seconds / 60).arg(seconds % 60, 2, 10, QLatin1Char('0'));
+	}
+	const QString color = endRequested                                                               ? "#92400e"
+			      : live()                                                                   ? "#b91c1c"
+			      : (starting || startRequested || (active && !status["canStart"].toBool())) ? "#92400e"
+			      : (active && status["canStart"].toBool())                                  ? "#15803d"
+			      : canPrestart()                                                            ? "#1d4ed8"
+													 : "#475569";
+	const QString style =
+		QString("QPushButton#primaryAction { background-color: %1; color: white; font-size: 15px; font-weight: bold; min-height: 48px; padding: 8px 12px; border: 2px solid transparent; border-radius: 6px; } QPushButton#primaryAction:disabled { background-color: %1; color: white; } QPushButton#primaryAction:hover:enabled { border-color: #cbd5e1; } QPushButton#primaryAction:focus { border-color: white; }")
+			.arg(color);
+	if (primary->styleSheet() != style)
+		primary->setStyleSheet(style);
 	primary->setText(primaryText);
 	primary->setEnabled(canPrestart() || canTransition());
+	primary->setToolTip(primary->isEnabled() ? primaryText : message->text());
 	cancel->setVisible(managed && !live() && !finished());
 	cancel->setEnabled(managed && fresh && !busy && !live() && !startRequested && !endRequested);
 	endOverride->setVisible(endRequested || live());
@@ -491,8 +536,9 @@ void LiveControl::render()
 	const bool anyOverride = cancel->isEnabled() || endOverride->isEnabled() || stopOverride->isEnabled();
 	overrides->setEnabled(anyOverride);
 	if (!anyOverride)
-		overrides->setText("Overrides");
-	overrides->setToolTip("Override: " + preferred->text() + ". Use the arrow for other actions.");
+		overrides->setText("No active stream to override");
+	overrides->setToolTip(anyOverride ? "Override: " + preferred->text() + ". Use the arrow for other actions."
+					  : "Overrides become available during Prestart or streaming.");
 	endOverride->setText(endWaiting ? "End YouTube Now" : endRequested ? "Retry YouTube End" : "End YouTube Now");
 	summary->setText(status.isEmpty() ? QString()
 					  : QString("OBS: %1 | YouTube: %2")
@@ -530,9 +576,16 @@ bool LiveControl::canTransition() const
 		       : encoder.active() && encoderMatches() && status["canStart"].toBool() && !startRequested);
 }
 
+void LiveControl::placeServiceSelector(QHBoxLayout *toolbar)
+{
+	toolbar->addWidget(serviceSelector, 1);
+	serviceSelector->setVisible(featureEnabled);
+}
+
 void LiveControl::setServiceManagerEnabled(bool enabled)
 {
 	setVisible(enabled);
+	serviceSelector->setVisible(enabled);
 	if (featureEnabled == enabled)
 		return;
 	featureEnabled = enabled;
@@ -552,4 +605,51 @@ void LiveControl::setServiceManagerEnabled(bool enabled)
 	for (auto *confirmation : findChildren<QMessageBox *>())
 		confirmation->reject();
 	render();
+}
+
+QString LiveControl::recoverService(const QString &id, const QJsonObject &body)
+{
+	if (!featureEnabled)
+		return "Enable Service Manager before recovering.";
+	const auto item = body["item"].toObject();
+	const auto stream = item["stream"].toObject();
+	const auto state = item["broadcast"].toObject()["lifeCycleStatus"].toString().toLower();
+	const QString server = stream["ingestionAddress"].toString(), key = stream["streamName"].toString();
+	if (QString::number(item["service"].toObject()["id"].toInteger()) != id || state.isEmpty() ||
+	    state == "complete" || state == "revoked")
+		return "The service is no longer recoverable.";
+	if (QUrl(server).host().isEmpty() || (QUrl(server).scheme() != "rtmp" && QUrl(server).scheme() != "rtmps") ||
+	    key.isEmpty())
+		return "Service Manager returned invalid stream credentials.";
+	if (encoder.active() && !encoder.matches(server, key))
+		return "OBS is streaming another destination. Stop it before recovery.";
+	++generation;
+	busy = false;
+	pollingPaused = false;
+	endWaiting = endRequested = startRequested = false;
+	prestartTimeout.stop();
+	poll.stop();
+	serviceId = id;
+	{
+		QSignalBlocker block(services);
+		services->clear();
+		services->addItem(item["service"].toObject()["title"].toString("Recovered service " + id), id);
+	}
+	status = item;
+	fresh = true;
+	if (!encoder.active()) {
+		const auto error = encoder.start(server, key);
+		if (!error.isEmpty()) {
+			render();
+			return error;
+		}
+		starting = true;
+		startDeadline = QDateTime::currentMSecsSinceEpoch() + 30000;
+	}
+	managed = true;
+	if (!live())
+		prestartTimeout.start(RequestPolicy::prestartTimeoutMs);
+	message->setText("Recovered service. Reconnecting OBS to YouTube...");
+	render();
+	return {};
 }

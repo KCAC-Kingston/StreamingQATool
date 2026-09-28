@@ -8,6 +8,7 @@ class QThread;
 struct ApiError {
 	QString message;
 	bool retryable = true;
+	int status = 0;
 };
 
 class ServiceManagerClient : public QObject {
@@ -17,7 +18,8 @@ public:
 	explicit ServiceManagerClient(QObject *parent = nullptr, int requestTimeoutMs = 20000);
 	~ServiceManagerClient() override;
 	void configure(const QString &baseUrl, const QString &apiKey);
-	void request(const QString &path, const QByteArray &method, Success success, Failure failure);
+	void request(const QString &path, const QByteArray &method, Success success, Failure failure,
+		     const QByteArray &body = "{}", const QByteArray &contentType = "application/json");
 	static QString normalizeHost(QString host);
 	static bool validHost(const QString &host);
 

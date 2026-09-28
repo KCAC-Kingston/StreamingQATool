@@ -28,6 +28,10 @@ int main(int argc, char **argv)
 		auto *underlay = new QLabel(
 			"Underlying scene selector\nUnderlying YouTube links\nUnderlying streaming controls", &parent);
 		underlay->setGeometry(10, 35, 330, 150);
+		auto *primary = new QPushButton("End Streaming", &parent);
+		primary->setGeometry(10, 190, 330, 76);
+		auto *overrides = new QPushButton("Stop OBS Now", &parent);
+		overrides->setGeometry(10, 270, 330, 32);
 		parent.show();
 		QStringList switches;
 		CameraAssist assist(
@@ -36,6 +40,7 @@ int main(int argc, char **argv)
 				return QString();
 			},
 			&parent);
+		assist.setActionArea(primary, overrides);
 		QJsonObject start{{"section", "sermon-start"}}, end{{"section", "sermon-end"}};
 		auto marker = [&](const char *event, const QJsonObject &data) {
 			assist.markerEvent(event, data);
@@ -67,6 +72,14 @@ int main(int argc, char **argv)
 		check(assist.isHidden(), "no return while end marker visible");
 		marker("marker.disappeared", end);
 		check(!assist.isHidden(), "return countdown prompt");
+		app.processEvents();
+		check(assist.geometry().contains(primary->geometry()) && assist.geometry().contains(overrides->geometry()),
+		      "Camera Assist must cover both streaming actions");
+		auto *switchButton = assist.findChild<QPushButton *>("cameraAssistSwitch");
+		check(switchButton->height() >= switchButton->fontMetrics().lineSpacing() * 2 + 12,
+		      "Countdown button must fit two lines");
+		if (app.arguments().size() > 1)
+			check(parent.grab().save(app.arguments()[1]), "countdown screenshot");
 		assist.findChild<QPushButton *>("cameraAssistDismiss")->click();
 		wait(1100);
 		check(switches.size() == 1, "dismiss cancels countdown");

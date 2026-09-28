@@ -3,6 +3,7 @@
 #include <QJsonObject>
 #include <QTimer>
 #include <QElapsedTimer>
+#include <QPointer>
 #include <functional>
 
 class QLabel;
@@ -14,6 +15,7 @@ public:
 	void configure(bool enabled, const QString &slides, const QString &camera, int delay);
 	void markerEvent(const QString &event, const QJsonObject &data);
 	void sceneChanged(const QString &scene);
+	void setActionArea(QWidget *primary, QWidget *overrides);
 	std::function<void(const QString &, const QJsonObject &)> eventSink;
 
 protected:
@@ -28,6 +30,7 @@ private:
 	SwitchScene switchScene;
 	QLabel *message;
 	QPushButton *accept;
+	QPointer<QWidget> primaryAction, overrideAction;
 	QTimer timer;
 	QElapsedTimer elapsed;
 	bool enabled = false, returning = false;

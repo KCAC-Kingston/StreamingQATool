@@ -9,6 +9,7 @@
 #include <QJsonDocument>
 #include <QLabel>
 #include <QMessageBox>
+#include <QMouseEvent>
 #include <QPushButton>
 #include <QAction>
 #include <QToolButton>
@@ -149,6 +150,7 @@ struct Worker : QTcpServer {
 
 static void workflow(int delay, bool skipWait, bool failEnd, int denials = 0)
 {
+	fprintf(stderr, "Workflow delay=%d fail=%d denials=%d\n", delay, failEnd, denials);
 	Worker worker;
 	bool active = false;
 	QString server, key;
@@ -168,6 +170,8 @@ static void workflow(int delay, bool skipWait, bool failEnd, int denials = 0)
 		},
 	};
 	LiveControl panel(encoder);
+	panel.resize(320, 400);
+	panel.show();
 	auto button = [&](const char *name) {
 		return panel.findChild<QPushButton *>(name);
 	};
@@ -184,7 +188,20 @@ static void workflow(int delay, bool skipWait, bool failEnd, int denials = 0)
 	check(button("openStudio")->isEnabled() && button("openYouTube")->isEnabled(),
 	      "Browser controls not enabled after selection");
 	check(button("primaryAction")->text() == "Prestart", "Primary label before prestart");
-	button("primaryAction")->click();
+	auto *primary = button("primaryAction");
+	auto *overrideButton = panel.findChild<QToolButton *>("overrides");
+	QApplication::processEvents();
+	check(primary->geometry().bottom() < overrideButton->geometry().top() &&
+		      primary->width() == overrideButton->width(),
+	      "Action buttons overlap or differ in width");
+	const QPoint center = primary->rect().center();
+	check(panel.childAt(primary->mapTo(&panel, center)) == primary, "Prestart click is intercepted");
+	QMouseEvent press(QEvent::MouseButtonPress, QPointF(center), QPointF(primary->mapToGlobal(center)),
+			  Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+	QMouseEvent release(QEvent::MouseButtonRelease, QPointF(center), QPointF(primary->mapToGlobal(center)),
+			    Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+	QApplication::sendEvent(primary, &press);
+	QApplication::sendEvent(primary, &release);
 	waitFor([&]() { return active; });
 	check(poll->interval() == 15000, "Prestart polling is not 15 seconds");
 	auto *deadline = panel.findChild<QTimer *>("prestartTimeout");
@@ -196,7 +213,8 @@ static void workflow(int delay, bool skipWait, bool failEnd, int denials = 0)
 	panel.refreshStatus();
 	waitFor([&]() { return button("primaryAction")->isEnabled(); });
 	check(!services->isEnabled(), "Selection unlocked during streaming");
-	check(button("primaryAction")->text() == "Start Streaming", "Primary label when ready");
+	check(button("primaryAction")->text().startsWith("Start Streaming\nAuto-cancel in "),
+	      "Primary label and countdown when ready");
 	check(panel.findChild<QToolButton *>("overrides")->defaultAction() ==
 		      panel.findChild<QAction *>("cancelPrestart"),
 	      "Cancel override during prestart");
@@ -207,12 +225,12 @@ static void workflow(int delay, bool skipWait, bool failEnd, int denials = 0)
 			return button("primaryAction")->text() == "End Streaming" &&
 			       button("primaryAction")->isEnabled();
 		},
-		6000);
+		35000);
 	check(worker.starts == denials + 1, "Incorrect number of Start retries");
 	check(!deadline->isActive(), "Prestart timeout remained armed after YouTube went live");
 	check(poll->interval() == 30000, "Live polling is not 30 seconds");
 	for (int i = 1; i < worker.startTimes.size(); ++i)
-		check(worker.startTimes[i] - worker.startTimes[i - 1] >= 950, "Start retries were too fast");
+		check(worker.startTimes[i] - worker.startTimes[i - 1] >= 4750, "Start retries were too fast");
 	worker.confirmEnd = false;
 	worker.failEnd = failEnd;
 	worker.endDenials = denials;
@@ -223,20 +241,20 @@ static void workflow(int delay, bool skipWait, bool failEnd, int denials = 0)
 		panel.findChild<QAction *>("endNow")->trigger();
 	waitFor(
 		[&]() {
-			return worker.ends == (failEnd ? 4 : denials + 1) &&
+			return worker.ends == (failEnd ? RequestPolicy::commandRetries + 1 : denials + 1) &&
 			       panel.findChild<QAction *>("endNow")->isEnabled();
 		},
-		6000);
+		35000);
 	check(poll->interval() == 15000, "End confirmation polling is not 15 seconds");
 	for (int i = 1; i < worker.endTimes.size(); ++i)
-		check(worker.endTimes[i] - worker.endTimes[i - 1] >= 950, "End retries were too fast");
+		check(worker.endTimes[i] - worker.endTimes[i - 1] >= 4750, "End retries were too fast");
 	check(active && stops == 0, "OBS stopped without YouTube completion confirmation");
 	check(panel.findChild<QAction *>("stopObsNow")->isEnabled(), "Override unavailable while ending");
 	if (failEnd) {
 		QElapsedTimer noExtraRetry;
 		noExtraRetry.start();
 		waitFor([&]() { return noExtraRetry.elapsed() >= 1200; });
-		check(worker.ends == 4, "End retried beyond the three-retry limit");
+		check(worker.ends == RequestPolicy::commandRetries + 1, "End retried beyond the five-retry limit");
 		panel.findChild<QAction *>("stopObsNow")->trigger();
 		waitFor([&]() { return panel.findChild<QMessageBox *>() != nullptr; });
 		panel.findChild<QMessageBox *>()->done(QMessageBox::Yes);
@@ -295,6 +313,40 @@ static void serviceManagerToggle()
 	check(!panel.findChild<QTimer *>("serviceManagerPoll")->isActive() &&
 		      !panel.findChild<QTimer *>("prestartTimeout")->isActive(),
 	      "Disabled timers still armed");
+}
+
+static void recoverLiveService()
+{
+	Worker worker;
+	worker.state = "live";
+	bool active = false;
+	int starts = 0;
+	LiveControl panel({[&]() { return active; }, [](const QString &, const QString &) { return true; },
+			   [&](const QString &server, const QString &key) {
+				   check(server == "rtmp://example.test/live" && key == "private-key",
+					 "Recovery RTMP credentials");
+				   ++starts;
+				   active = true;
+				   return QString();
+			   },
+			   [&]() {
+				   active = false;
+			   }});
+	panel.configure(QString("http://127.0.0.1:%1").arg(worker.serverPort()), "test-key", 0);
+	waitFor([&]() { return panel.findChild<QComboBox *>("selectedService")->count() == 2; });
+	QJsonObject body{{"item", QJsonObject{{"service", QJsonObject{{"id", 1}, {"title", "Recovered"}}},
+					      {"broadcast", QJsonObject{{"lifeCycleStatus", "live"}}},
+					      {"stream", QJsonObject{{"ingestionAddress", "rtmp://example.test/live"},
+								     {"streamName", "private-key"}}},
+					      {"canEnd", true}}}};
+	check(panel.recoverService("1", body).isEmpty() && starts == 1 && active, "Recovery starts local encoder");
+	waitFor([&]() { return panel.findChild<QPushButton *>("primaryAction")->isEnabled(); });
+	check(panel.findChild<QPushButton *>("primaryAction")->text() == "End Streaming" && worker.starts == 0,
+	      "Recovery must not restart remote YouTube broadcast");
+	panel.findChild<QPushButton *>("primaryAction")->click();
+	waitFor([&]() { return !active; });
+	waitFor([&]() { return panel.findChild<QPushButton *>("primaryAction")->text() == "Select a service"; });
+	check(worker.ends == 1, "Recovered service can end normally");
 }
 
 static void prestartAutoCancel()
@@ -421,10 +473,16 @@ int main(int argc, char **argv)
 		workflow(30, true, false);    // Default wait can be overridden.
 		workflow(1, false, false);    // Custom countdown fires automatically.
 		workflow(0, false, true);     // Zero delay and emergency override after API error.
-		workflow(0, false, false, 3); // Access denied on both commands, successful third retries.
+		workflow(0, false, false, 5); // Access denied on both commands, successful fifth retries.
+		fprintf(stderr, "prestartAutoCancel\n");
 		prestartAutoCancel();
+		fprintf(stderr, "serviceManagerToggle\n");
 		serviceManagerToggle();
+		fprintf(stderr, "recoverLiveService\n");
+		recoverLiveService();
+		fprintf(stderr, "apiFailures\n");
 		apiFailures();
+		fprintf(stderr, "settingsPersistence\n");
 		settingsPersistence();
 		std::puts(
 			"PASS: workflow, delays, overrides, HTTP/auth failures, malformed JSON, timeout, offline connection, settings persistence, corrupt settings, and secret redaction");
