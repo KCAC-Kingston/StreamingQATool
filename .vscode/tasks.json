@@ -1,0 +1,32 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "StreamingQATool: Configure",
+      "type": "process",
+      "command": "cmake",
+      "args": ["--preset", "windows-x64"],
+      "options": {"cwd": "${workspaceFolder}"},
+      "problemMatcher": []
+    },
+    {
+      "label": "StreamingQATool: Build",
+      "type": "process",
+      "command": "powershell.exe",
+      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/.vscode/Build-Windows.ps1"],
+      "options": {"cwd": "${workspaceFolder}"},
+      "dependsOn": "StreamingQATool: Configure",
+      "group": {"kind": "build", "isDefault": true},
+      "problemMatcher": "$msCompile"
+    },
+    {
+      "label": "StreamingQATool: Stage release",
+      "type": "process",
+      "command": "cmake",
+      "args": ["--install", "build_x64", "--config", "RelWithDebInfo", "--prefix", "release"],
+      "options": {"cwd": "${workspaceFolder}"},
+      "dependsOn": "StreamingQATool: Build",
+      "problemMatcher": []
+    }
+  ]
+}

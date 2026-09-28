@@ -1,5 +1,5 @@
 /*
-Plugin Name
+StreamingQATool
 Copyright (C) <Year> <Developer> <Email Address>
 
 This program is free software; you can redistribute it and/or modify
@@ -18,17 +18,25 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <obs-module.h>
 #include <plugin-support.h>
+#include "plugin-ui.h"
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
 
 bool obs_module_load(void)
 {
+	streaming_qa_load_settings();
 	obs_log(LOG_INFO, "plugin loaded successfully (version %s)", PLUGIN_VERSION);
 	return true;
 }
 
+void obs_module_post_load(void)
+{
+	streaming_qa_create_panel();
+}
+
 void obs_module_unload(void)
 {
+	streaming_qa_destroy_panel();
 	obs_log(LOG_INFO, "plugin unloaded");
 }
