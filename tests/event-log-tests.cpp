@@ -83,8 +83,7 @@ int main(int argc, char **argv)
 		check(!QFile::exists(old) && QFile::exists(unrelated), "retention must only delete owned expired logs");
 		log.append("openlp", "slide.changed",
 			   {{"serviceItem", "Test song"}, {"slide", 8}, {"apiKey", "secret"}});
-		QFile file(dir.filePath("streamingqa-" + QDateTime::currentDateTimeUtc().date().toString(Qt::ISODate) +
-					".jsonl"));
+		QFile file(log.runFilePath());
 		check(file.open(QIODevice::ReadOnly), "persisted log");
 		const auto bytes = file.readAll();
 		const auto record = QJsonDocument::fromJson(bytes).object();
@@ -105,6 +104,41 @@ int main(int argc, char **argv)
 		check(log.recent().size() == before + 1, "duplicate disconnection omitted");
 		log.append("openlp", "connection.state", {{"state", "Connected (OpenLP 3.0)"}});
 		check(log.recent().last().endsWith("OpenLP: Connected"), "recovery retained");
+		const auto observed = QDateTime::fromString("2026-09-27T23:59:59.500Z", Qt::ISODateWithMs);
+		log.append("marker", "marker.appeared", {{"section", "worship-song"}, {"elapsedMs", 100}}, observed);
+		QFile markerFile(log.runFilePath());
+		check(markerFile.open(QIODevice::ReadOnly), "marker event file");
+		const auto markerLines = markerFile.readAll().trimmed().split('\n');
+		const auto markerRecord = QJsonDocument::fromJson(markerLines.last()).object();
+		check(markerRecord["timestamp"].toString() == observed.toString(Qt::ISODateWithMs) &&
+			      markerRecord["details"].toObject()["section"] == "worship-song" &&
+			      markerRecord["details"].toObject()["elapsedMs"] == 100,
+		      "marker first-observation timestamp and data saved");
+		log.append("live-control", "prestart.requested", {{"serviceId", "1"}});
+		log.append("obs", "streaming.started");
+		log.append("live-control", "youtube.start.requested");
+		log.append("live-control", "youtube.streaming.started");
+		log.append("obs", "streaming.ended"); // Override: still waiting for YouTube.
+		log.append("live-control", "youtube.streaming.ended");
+		log.append("obs", "scene.changed", {{"scene", "after-stream"}});
+		auto streams = QDir(dir.path()).entryList({"streamingqa-stream-*.jsonl"}, QDir::Files);
+		check(streams.size() == 1, "one stream file per prestart");
+		QFile streamLog(dir.filePath(streams.first()));
+		check(streamLog.open(QIODevice::ReadOnly), "stream file readable");
+		const auto streamBytes = streamLog.readAll();
+		check(streamBytes.contains("prestart.requested") && streamBytes.contains("youtube.streaming.ended") &&
+			      streamBytes.contains("streaming.ended") && !streamBytes.contains("after-stream"),
+		      "stream boundaries include both ends, exclude later events");
+		log.append("live-control", "prestart.requested", {{"serviceId", "2"}});
+		log.append("obs", "streaming.started");
+		log.append("live-control", "prestart.cancelled", {{"reason", "user"}});
+		log.append("obs", "streaming.ended");
+		check(QDir(dir.path()).entryList({"streamingqa-stream-*.jsonl"}, QDir::Files).size() == 2,
+		      "separate cancelled prestart log");
+		{
+			EventLog nextRun(dir.path());
+			check(nextRun.runFilePath() != log.runFilePath(), "unique per-run log");
+		}
 		check(OpenLpMonitor::slideState({{"results", QJsonObject{{"item", "id"}, {"slide", 7}}}})["slide"] == 8,
 		      "OpenLP one-based slide");
 		check(OpenLpMonitor::slideState({{"results", QJsonObject{{"slide", "bad"}}}}).isEmpty(),

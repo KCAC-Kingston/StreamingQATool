@@ -11,7 +11,7 @@ int LiveControl::pollInterval() const
 
 void LiveControl::schedulePoll()
 {
-	if (busy || pollingPaused || baseUrl.isEmpty()) {
+	if (!featureEnabled || busy || pollingPaused || baseUrl.isEmpty()) {
 		poll.stop();
 		return;
 	}
@@ -23,7 +23,7 @@ void LiveControl::schedulePoll()
 
 void LiveControl::request(const QString &path, const QByteArray &method, Result result)
 {
-	if (busy || baseUrl.isEmpty())
+	if (!featureEnabled || busy || baseUrl.isEmpty())
 		return;
 	busy = true;
 	poll.stop();
@@ -35,7 +35,7 @@ void LiveControl::request(const QString &path, const QByteArray &method, Result 
 void LiveControl::attemptRequest(const QString &path, const QByteArray &method, Result result, int retriesLeft,
 				 int token)
 {
-	if (token != generation)
+	if (!featureEnabled || token != generation)
 		return;
 	// A local stop/override during a retry must not start YouTube afterward.
 	if (method == "POST" && path.endsWith("/start") && (!encoder.active() || !encoderMatches())) {
@@ -47,7 +47,7 @@ void LiveControl::attemptRequest(const QString &path, const QByteArray &method, 
 	client.request(
 		path, method,
 		[this, token, result](const QJsonObject &body) {
-			if (token != generation)
+			if (!featureEnabled || token != generation)
 				return;
 			busy = false;
 			pollingPaused = false;
@@ -55,7 +55,7 @@ void LiveControl::attemptRequest(const QString &path, const QByteArray &method, 
 			render();
 		},
 		[this, path, method, result, retriesLeft, token](const ApiError &error) {
-			if (token != generation)
+			if (!featureEnabled || token != generation)
 				return;
 			fresh = false;
 			if (retriesLeft > 0) {

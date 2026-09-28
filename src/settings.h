@@ -20,5 +20,5 @@ private:
 class SettingsDialog : public QDialog {
 public:
 	SettingsDialog(SettingsStore &store, std::function<QString(const QJsonObject &)> validate,
-		       std::function<void()> saved, QWidget *parent);
+		       std::function<void()> saved, QWidget *parent, const QStringList &scenes = {});
 };

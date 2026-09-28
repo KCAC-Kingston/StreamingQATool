@@ -45,9 +45,17 @@ Polling is state-dependent: one service-list fetch at startup, then **5 minutes 
 
 Connection, DNS, TLS, timeout, authentication, HTTP, and malformed-response failures appear in the dock. Failed status checks disable normal start controls, preserve OBS output, and keep overrides available. Failed **start/end commands retry up to three times, one second apart**, including access-denied responses (four attempts maximum). Polling pauses during those retries, and stops retrying commands once they succeed or exhaust the limit. Status polling then reconciles uncertain results. Authentication and configuration failures on ordinary reads require a manual retry or corrected settings. You can correct the API key during an active session, but cannot switch its host or selected service.
 
+### Optional Service Manager
+
+Settings includes **Enable Service Manager controls** (on by default). Turning it off hides the complete service selector, refresh, YouTube links, streaming and override controls. Polling, queued command retries, countdowns, and Prestart timeout automation stop. Existing OBS/YouTube streams are left running; a request already sent may still finish remotely. Stored credentials are preserved for re-enabling. Logging, connection monitors, marker detection/stats, and Camera Assist continue independently.
+
+### Compact dock controls
+
+The service selector and Refresh share a row, followed by Live Control Panel / YouTube links. One primary button changes from **Prestart** to **Start Streaming** to **End Streaming**, with disabled progress labels during waits. The adjacent override split button changes to the relevant action (Cancel Prestart, End YouTube Now, Retry YouTube End, or Stop OBS Now); its arrow exposes the available alternatives. OBS stop still requires confirmation. Small log and settings icons sit beside the title. Connection dots share a row, and detailed encoder, connection, and marker information is available in tooltips.
+
 ### Event logging
 
-**Open Log Stream** opens a non-blocking terminal-style viewer with brief local-time lines, such as `15:22:08  OpenLP: Amazing Grace | Slide 3`. New saved JSONL records retain only UTC timestamp, source, event, and relevant details; session IDs, sequence numbers, transport metadata, and intermediate status chatter are omitted. Existing log files are left intact. Logging continues while closed or paused. Daily JSONL files are saved in `%APPDATA%\obs-studio\plugin_config\StreamingQATool\logs`. Settings includes **Open Log Folder** and retention days (default **90**). Only expired StreamingQATool daily logs are removed.
+**Open Log Stream** opens a non-blocking terminal-style viewer with brief local-time lines, such as `15:22:08  OpenLP: Amazing Grace | Slide 3`. New saved JSONL records retain only UTC timestamp, source, event, and relevant details; session IDs, sequence numbers, transport metadata, and intermediate status chatter are omitted. Existing log files are left intact. Logging continues while closed or paused. Per-run and per-stream JSONL files are saved in `%APPDATA%\obs-studio\plugin_config\StreamingQATool\logs`. Settings includes **Open Log Folder** and retention days (default **90**). Only expired StreamingQATool logs are removed; active run and stream files are protected. Each OBS run gets a unique `streamingqa-run-*.jsonl`; each Prestart opens `streamingqa-stream-*.jsonl` alongside it. Stream logs include all events through local OBS and remote YouTube completion. Cancelled Prestarts close after OBS stops. Starting another attempt or closing OBS marks an unfinished stream as interrupted. Existing daily logs remain readable and subject to retention.
 
 Logs cover Prestart, YouTube start/end requests and confirmations, retries, actual local OBS start/end, OBS scene changes, OpenLP slides and Companion key presses. Requests and confirmations are separate events. Timestamps are UTC; stream credentials and API keys are excluded.
 
@@ -72,6 +80,26 @@ After the first project configure downloads dependencies, run the Windows tests 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tests/Run-Tests.ps1
 ```
+
+### Camera Assist
+
+Enable **Camera Assist** in Settings (off by default), select two different OBS scenes (**Slide-only scene** and **Slide + camera scene**), and set the return delay (default **15 seconds**, range 1–3600).
+
+While the current program scene is either assigned scene, a confirmed `sermon-start` marker shows a dismissible overlay asking to switch to the slide + camera scene. This switch requires a click. A confirmed `sermon-end` marker arms the return; only after that marker disappears does the overlay offer **Switch to slides now** with an automatic countdown. **Dismiss** cancels that occurrence's countdown. No prompt appears if already on its destination scene.
+
+Camera Assist works while streaming or idle. Moving to an unassigned scene disables it for that scene and cancels pending actions; manually changing scenes or disabling/reconfiguring the feature also cancels a pending prompt/countdown. The destination is validated when switching, so a removed or renamed scene produces an error instead of an automatic fallback. Rename/reassign scene selections in Settings as needed. Scene changes, assist switches, dismissals, and errors enter the existing logs.
+
+### Timestamp markers on OBS program output
+
+The main panel shows the current confirmed marker, appearance/disappearance counts, valid readings versus sampled frames, and last-seen time. Counts start with the OBS session and update once per second or on a confirmed change.
+
+The marker reader automatically samples the composed **program canvas** at up to 10 Hz, including scene transitions and overlays. It does not inspect the Studio Mode preview or require streaming to start. Decoding runs on a worker thread with at most one frame in flight. No screenshots or per-frame observations are saved; only confirmed changes enter the brief event log.
+
+It follows the sibling `timestamp-marker-reader` protocol: finder/contrast validation, extended Hamming (13,8), CRC-16/CCITT-FALSE, service v1 and hymn v2. Three matching samples confirm an appearance. One second of absent readings confirms disappearance. Replacing one valid marker with another logs the old marker disappearing and the new one appearing. Each event uses the first matching/absent sample's UTC timestamp and includes monotonic elapsed milliseconds. Events may therefore be appended after other events with later timestamps while confirmation is pending.
+
+Example: `15:22:08  Marker appeared: sermon-start | 2026-09-27 chinese`. Disappearance includes the same decoded data. Hymn markers contain only `worship-song` or `response-song`; the reader does not invent dates, service types, song titles, or page numbers. A marker returning after confirmed loss creates another appearance.
+
+Supports full-canvas and smaller repositioned slide sources using visible OBS scene-item bounds (including groups and nested scenes), centered 16:9/4:3 letterboxing, stretched aspect ratios, and small alignment offsets. Reads come from the final program image so covered markers remain absent. The footer must retain at least 112x8 pixels on the OBS base canvas (two pixels per cell); resizing below that loses required information. Rotated, flipped, partially off-canvas, cropped, or covered markers may not decode. The speaker-placeholder slide is intentionally unmarked by the generator. Current capture supports SDR 8-bit program textures; unsupported formats and capture errors appear in the panel. Capture failure is not treated as proof that a marker disappeared. Decoder tests use a checked-in copy of the reference reader's generator-produced fixtures (`tests/marker-fixtures.json`). Actual OBS presentation capture still needs validation after deployment.
 
 ## Introduction
 

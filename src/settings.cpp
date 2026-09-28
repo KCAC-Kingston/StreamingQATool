@@ -15,6 +15,7 @@
 #include <QDesktopServices>
 #include <QPushButton>
 #include <QUrl>
+#include <QSpinBox>
 
 namespace {
 struct Field {
@@ -37,11 +38,13 @@ constexpr Field fields[] = {
 QString SettingsStore::load(const QString &filePath)
 {
 	path = filePath;
-	const QJsonObject defaults{{"endStreamingDelay", "30"}, {"companionHost", "localhost"},
-				   {"companionPort", "8000"},   {"openlpHost", "localhost"},
-				   {"openlpPort", "4316"},      {"openlpVersion", "v3"},
-				   {"companionEnabled", true},  {"openlpEnabled", true},
-				   {"logRetentionDays", "90"}};
+	const QJsonObject defaults{{"serviceManagerEnabled", true}, {"endStreamingDelay", "30"},
+				   {"companionHost", "localhost"},  {"companionPort", "8000"},
+				   {"openlpHost", "localhost"},     {"openlpPort", "4316"},
+				   {"openlpVersion", "v3"},         {"companionEnabled", true},
+				   {"openlpEnabled", true},         {"cameraAssistEnabled", false},
+				   {"cameraAssistDelay", 15},       {"cameraAssistSlides", ""},
+				   {"cameraAssistCamera", ""},      {"logRetentionDays", "90"}};
 	data = defaults;
 	QFile file(path);
 	if (!file.exists())
@@ -58,6 +61,9 @@ QString SettingsStore::load(const QString &filePath)
 			data.insert(it.key(), it.value());
 	if (data["openlpVersion"].toString() != "v2" && data["openlpVersion"].toString() != "v3")
 		data.insert("openlpVersion", "v3");
+	const int assistDelay = data["cameraAssistDelay"].toInt(15);
+	if (assistDelay < 1 || assistDelay > 3600)
+		data.insert("cameraAssistDelay", 15);
 	bool retentionValid = false;
 	const int retention = data["logRetentionDays"].toString().toInt(&retentionValid);
 	if (!retentionValid || retention < 1 || retention > 3650)
@@ -96,15 +102,23 @@ QStringList SettingsStore::startupLogLines() const
 		value.replace('\r', ' ').replace('\n', ' ');
 		lines.append(QString("%1: %2").arg(field.label, value.isEmpty() ? "(not set)" : value));
 	}
+	lines.append(
+		QString("Service Manager: %1").arg(data["serviceManagerEnabled"].toBool(true) ? "enabled" : "disabled"));
 	lines.append("OpenLP version: " + data["openlpVersion"].toString());
 	lines.append(QString("OpenLP logging: %1; Companion logging: %2")
 			     .arg(data["openlpEnabled"].toBool() ? "enabled" : "disabled",
 				  data["companionEnabled"].toBool() ? "enabled" : "disabled"));
+	lines.append(QString("Camera Assist: %1; slides: %2; camera: %3; return delay: %4s")
+			     .arg(data["cameraAssistEnabled"].toBool() ? "enabled" : "disabled",
+				  data["cameraAssistSlides"].toString(), data["cameraAssistCamera"].toString())
+			     .arg(data["cameraAssistDelay"].toInt(15))
+			     .replace('\n', ' ')
+			     .replace('\r', ' '));
 	return lines;
 }
 
 SettingsDialog::SettingsDialog(SettingsStore &store, std::function<QString(const QJsonObject &)> validate,
-			       std::function<void()> saved, QWidget *parent)
+			       std::function<void()> saved, QWidget *parent, const QStringList &scenes)
 	: QDialog(parent)
 {
 	setWindowTitle("StreamingQATool Settings");
@@ -114,6 +128,12 @@ SettingsDialog::SettingsDialog(SettingsStore &store, std::function<QString(const
 	auto *layout = new QVBoxLayout(this);
 	auto *form = new QFormLayout;
 	layout->addLayout(form);
+	auto *managerEnabled = new QCheckBox("Enable Service Manager controls", this);
+	managerEnabled->setObjectName("serviceManagerEnabled");
+	managerEnabled->setChecked(store.values()["serviceManagerEnabled"].toBool(true));
+	managerEnabled->setToolTip(
+		"Disable to hide streaming controls and stop Service Manager automation. Existing OBS/YouTube streams keep running.");
+	form->addRow(managerEnabled);
 	QList<QLineEdit *> inputs;
 	auto *openlpVersion = new QComboBox(this);
 	openlpVersion->setObjectName("openlpVersion");
@@ -140,7 +160,35 @@ SettingsDialog::SettingsDialog(SettingsStore &store, std::function<QString(const
 			input->setPlaceholderText("servicemanager.example.com (HTTPS is automatic)");
 		form->addRow(QString::fromUtf8(field.label), input);
 		inputs.append(input);
+		if (QString::fromUtf8(field.key).startsWith("serviceManager") ||
+		    QString::fromUtf8(field.key) == "endStreamingDelay") {
+			input->setEnabled(managerEnabled->isChecked());
+			connect(managerEnabled, &QCheckBox::toggled, input, &QLineEdit::setEnabled);
+		}
 	}
+	auto *assistEnabled = new QCheckBox("Enable Camera Assist", this);
+	assistEnabled->setChecked(store.values()["cameraAssistEnabled"].toBool());
+	form->addRow(assistEnabled);
+	auto sceneInput = [&](const char *key, const char *label) {
+		auto *combo = new QComboBox(this);
+		combo->setObjectName(key);
+		combo->addItem("Select a scene...", "");
+		for (const auto &scene : scenes)
+			combo->addItem(scene, scene);
+		const auto selected = store.values()[key].toString();
+		if (!selected.isEmpty() && combo->findData(selected) < 0)
+			combo->addItem(selected + " (missing)", selected);
+		combo->setCurrentIndex(qMax(0, combo->findData(selected)));
+		form->addRow(label, combo);
+		return combo;
+	};
+	auto *slidesScene = sceneInput("cameraAssistSlides", "Slide-only scene");
+	auto *cameraScene = sceneInput("cameraAssistCamera", "Slide + camera scene");
+	auto *assistDelay = new QSpinBox(this);
+	assistDelay->setRange(1, 3600);
+	assistDelay->setSuffix(" seconds");
+	assistDelay->setValue(store.values()["cameraAssistDelay"].toInt(15));
+	form->addRow("Camera Assist return delay", assistDelay);
 	auto *status = new QLabel(this);
 	status->setWordWrap(true);
 	status->setTextFormat(Qt::PlainText);
@@ -156,11 +204,15 @@ SettingsDialog::SettingsDialog(SettingsStore &store, std::function<QString(const
 	layout->addWidget(buttons);
 	connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
 	connect(buttons, &QDialogButtonBox::accepted, this,
-		[this, &store, inputs, status, validate, saved, openlpVersion, openlpEnabled, companionEnabled]() {
-			QJsonObject updated;
+		[this, &store, inputs, status, validate, saved, openlpVersion, openlpEnabled, companionEnabled,
+		 assistEnabled, slidesScene, cameraScene, assistDelay, managerEnabled]() {
+			QJsonObject updated = store.values();
 			for (int i = 0; i < inputs.size(); ++i) {
 				const auto &field = fields[i];
 				const QString fieldKey = QString::fromUtf8(field.key);
+				if (!managerEnabled->isChecked() &&
+				    (fieldKey.startsWith("serviceManager") || fieldKey == "endStreamingDelay"))
+					continue;
 				QString value = inputs[i]->text().trimmed();
 				const bool delay = fieldKey == "endStreamingDelay";
 				const bool retention = fieldKey == "logRetentionDays";
@@ -204,9 +256,20 @@ SettingsDialog::SettingsDialog(SettingsStore &store, std::function<QString(const
 				}
 				updated.insert(field.key, value);
 			}
+			updated.insert("serviceManagerEnabled", managerEnabled->isChecked());
 			updated.insert("openlpVersion", openlpVersion->currentData().toString());
 			updated.insert("companionEnabled", companionEnabled->isChecked());
 			updated.insert("openlpEnabled", openlpEnabled->isChecked());
+			updated.insert("cameraAssistEnabled", assistEnabled->isChecked());
+			updated.insert("cameraAssistSlides", slidesScene->currentData().toString());
+			updated.insert("cameraAssistCamera", cameraScene->currentData().toString());
+			updated.insert("cameraAssistDelay", assistDelay->value());
+			if (assistEnabled->isChecked() && (slidesScene->currentData().toString().isEmpty() ||
+							   cameraScene->currentData().toString().isEmpty() ||
+							   slidesScene->currentData() == cameraScene->currentData())) {
+				status->setText("Camera Assist requires two different scenes.");
+				return;
+			}
 			QString error = validate(updated);
 			if (error.isEmpty())
 				error = store.save(updated);

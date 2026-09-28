@@ -39,7 +39,9 @@ endif()
 
 target_sources(
   ${CMAKE_PROJECT_NAME}
-  PRIVATE src/event-format.cpp src/event-log.cpp src/event-log.h src/log-window.cpp src/log-window.h
+  PRIVATE src/marker-regions.cpp src/marker-regions.h src/camera-assist.cpp src/camera-assist.h src/marker-decoder.cpp src/marker-decoder.h src/marker-tracker.cpp src/marker-tracker.h
+          src/marker-monitor.cpp src/marker-monitor.h
+          src/event-format.cpp src/event-log.cpp src/event-log.h src/log-window.cpp src/log-window.h
           src/local-websocket.cpp src/local-websocket.h
           src/openlp-monitor.cpp src/openlp-monitor.h src/companion-monitor.cpp src/companion-monitor.h
           src/plugin-main.c src/plugin-ui.cpp src/plugin-ui.h

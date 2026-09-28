@@ -7,6 +7,8 @@
 #include <QWidget>
 #include <functional>
 
+class QAction;
+class QToolButton;
 class QComboBox;
 class QLabel;
 class QPushButton;
@@ -25,6 +27,7 @@ public:
 	LiveControl(EncoderControl encoder, QWidget *parent = nullptr);
 	void configure(const QString &host, const QString &apiKey, int endDelaySeconds = 30);
 	void refreshStatus();
+	void setServiceManagerEnabled(bool enabled);
 	bool sessionActive() const;
 	std::function<void(const QString &, const QJsonObject &)> eventSink;
 
@@ -38,6 +41,8 @@ private:
 	void loadServices(int page = 1);
 	void selectService();
 	void acceptStatus(const QJsonObject &body);
+	bool canPrestart() const;
+	bool canTransition() const;
 	void prestart();
 	void transition(const QString &action);
 	void endNow();
@@ -59,11 +64,11 @@ private:
 	QPushButton *refresh;
 	QPushButton *studio;
 	QPushButton *youtube;
-	QPushButton *prepare;
-	QPushButton *startStop;
-	QPushButton *cancel;
-	QPushButton *endOverride;
-	QPushButton *stopOverride;
+	QPushButton *primary;
+	QToolButton *overrides;
+	QAction *cancel;
+	QAction *endOverride;
+	QAction *stopOverride;
 	QLabel *summary;
 	QLabel *message;
 	QString baseUrl;
@@ -71,6 +76,7 @@ private:
 	QString serviceId;
 	QJsonObject status;
 	int generation = 0;
+	bool featureEnabled = true;
 	bool busy = false;
 	bool pollingPaused = false;
 	bool fresh = false;

@@ -4,7 +4,9 @@
 #include <QComboBox>
 #include <QDateTime>
 #include <QDesktopServices>
-#include <QFormLayout>
+#include <QHBoxLayout>
+#include <QMenu>
+#include <QToolButton>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
@@ -18,33 +20,55 @@
 LiveControl::LiveControl(EncoderControl control, QWidget *parent) : QWidget(parent), encoder(std::move(control))
 {
 	auto *layout = new QVBoxLayout(this);
+	layout->setContentsMargins(0, 0, 0, 0);
+	layout->setSpacing(4);
+	setStyleSheet(
+		"QPushButton { padding: 3px 8px; min-height: 20px; } QToolButton { padding: 3px 6px; } QPushButton#primaryAction { font-weight: bold; }");
 	services = new QComboBox(this);
 	services->setObjectName("selectedService");
+	services->setAccessibleName("Selected Service");
+	services->setToolTip("Selected Service");
 	services->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-	services->setMinimumContentsLength(15);
-	auto *form = new QFormLayout;
-	form->addRow("Selected Service", services);
-	layout->addLayout(form);
-	auto addButton = [this, layout](const char *text, const char *name) {
+	services->setMinimumContentsLength(12);
+	services->setMinimumWidth(0);
+	auto addButton = [this](const char *text, const char *name) {
 		auto *button = new QPushButton(text, this);
 		button->setObjectName(name);
-		layout->addWidget(button);
 		return button;
 	};
-	refresh = addButton("Refresh Services", "refreshServices");
-	studio = addButton("Open YouTube Live Control Panel", "openStudio");
-	youtube = addButton("Open YouTube", "openYouTube");
-	prepare = addButton("Prestart", "prestart");
-	startStop = addButton("Start Streaming", "startStop");
-	cancel = addButton("Cancel Prestart", "cancelPrestart");
-	endOverride = addButton("End YouTube Now (skip wait)", "endNow");
-	stopOverride = addButton("Stop OBS Now (override)", "stopObsNow");
+	refresh = addButton("Refresh", "refreshServices");
+	auto *serviceRow = new QHBoxLayout;
+	serviceRow->addWidget(services, 1);
+	serviceRow->addWidget(refresh);
+	layout->addLayout(serviceRow);
+	studio = addButton("Live Control Panel", "openStudio");
+	youtube = addButton("YouTube", "openYouTube");
+	auto *links = new QHBoxLayout;
+	links->addWidget(studio, 1);
+	links->addWidget(youtube, 1);
+	layout->addLayout(links);
+	primary = addButton("Prestart", "primaryAction");
+	overrides = new QToolButton(this);
+	overrides->setObjectName("overrides");
+	overrides->setPopupMode(QToolButton::MenuButtonPopup);
+	auto *menu = new QMenu(overrides);
+	cancel = menu->addAction("Cancel Prestart");
+	cancel->setObjectName("cancelPrestart");
+	endOverride = menu->addAction("End YouTube Now");
+	endOverride->setObjectName("endNow");
+	stopOverride = menu->addAction("Stop OBS Now");
+	stopOverride->setObjectName("stopObsNow");
+	overrides->setMenu(menu);
+	auto *actions = new QHBoxLayout;
+	actions->addWidget(primary, 1);
+	actions->addWidget(overrides);
+	layout->addLayout(actions);
 	summary = new QLabel(this);
 	summary->setObjectName("streamSummary");
 	summary->setWordWrap(true);
 	summary->setTextFormat(Qt::PlainText);
 	layout->addWidget(summary);
-	message = new QLabel("Enter the Service Manager host and API key in Settings.", this);
+	message = new QLabel("Configure Service Manager in Settings.", this);
 	message->setObjectName("controlMessage");
 	message->setWordWrap(true);
 	message->setTextFormat(Qt::PlainText);
@@ -57,10 +81,14 @@ LiveControl::LiveControl(EncoderControl control, QWidget *parent) : QWidget(pare
 		else
 			loadServices();
 	});
-	connect(prepare, &QPushButton::clicked, this, [this]() { prestart(); });
-	connect(startStop, &QPushButton::clicked, this, [this]() { transition(live() ? "end" : "start"); });
-	connect(endOverride, &QPushButton::clicked, this, [this]() { endNow(); });
-	connect(stopOverride, &QPushButton::clicked, this, [this]() {
+	connect(primary, &QPushButton::clicked, this, [this]() {
+		if (canPrestart())
+			prestart();
+		else if (canTransition())
+			transition(live() ? "end" : "start");
+	});
+	connect(endOverride, &QAction::triggered, this, [this]() { endNow(); });
+	connect(stopOverride, &QAction::triggered, this, [this]() {
 		auto *confirm = new QMessageBox(
 			QMessageBox::Warning, "Stop OBS now?",
 			"This stops OBS immediately without waiting for YouTube. The YouTube broadcast may remain live.",
@@ -68,7 +96,7 @@ LiveControl::LiveControl(EncoderControl control, QWidget *parent) : QWidget(pare
 		confirm->setAttribute(Qt::WA_DeleteOnClose);
 		confirm->setDefaultButton(QMessageBox::No);
 		connect(confirm, &QMessageBox::finished, this, [this](int choice) {
-			if (choice == QMessageBox::Yes) {
+			if (choice == QMessageBox::Yes && featureEnabled) {
 				logEvent("obs.stop_override.requested");
 				prestartTimeout.stop();
 				encoder.stop();
@@ -79,7 +107,7 @@ LiveControl::LiveControl(EncoderControl control, QWidget *parent) : QWidget(pare
 		});
 		confirm->open();
 	});
-	connect(cancel, &QPushButton::clicked, this, [this]() {
+	connect(cancel, &QAction::triggered, this, [this]() {
 		if (busy || live() || !fresh || !managed || startRequested || endRequested)
 			return;
 		logEvent("prestart.cancelled", {{"reason", "user"}});
@@ -128,15 +156,13 @@ LiveControl::LiveControl(EncoderControl control, QWidget *parent) : QWidget(pare
 	connect(&encoderWatch, &QTimer::timeout, this, [this]() {
 		if (endWaiting) {
 			const int remaining = qMax(0, endDelaySeconds - int(endDelay.elapsed() / 1000));
-			message->setText(
-				QString("Ending YouTube in %1 seconds. OBS keeps streaming until YouTube confirms completion.")
-					.arg(remaining));
+			message->setText(QString("Ending in %1s. OBS stays on until YouTube ends.").arg(remaining));
 			if (remaining == 0 && !busy)
 				endNow();
 		}
 		if (starting && encoder.active()) {
 			starting = false;
-			message->setText("OBS is sending video. Waiting for YouTube to be ready...");
+			message->setText("Waiting for YouTube readiness.");
 		} else if (starting && QDateTime::currentMSecsSinceEpoch() > startDeadline) {
 			prestartTimeout.stop();
 			starting = false;
@@ -156,6 +182,8 @@ bool LiveControl::sessionActive() const
 
 void LiveControl::configure(const QString &host, const QString &key, int delaySeconds)
 {
+	if (!featureEnabled)
+		return;
 	const QString normalizedHost = ServiceManagerClient::normalizeHost(host);
 	const bool preserveSession = !serviceId.isEmpty() && sessionActive();
 	if (preserveSession && normalizedHost != baseUrl)
@@ -236,7 +264,7 @@ void LiveControl::loadServices(int page)
 			loadServices(page + 1);
 			return;
 		}
-		message->setText(services->count() > 1 ? "Select a service to load its YouTube stream."
+		message->setText(services->count() > 1 ? "Select a service."
 						       : "No linked services in the next 30 days.");
 	});
 }
@@ -316,10 +344,9 @@ void LiveControl::acceptStatus(const QJsonObject &body)
 		if ((managed || endRequested) && encoder.active() && encoderMatches())
 			encoder.stop();
 		managed = starting = startRequested = endRequested = endWaiting = false;
-		message->setText("YouTube broadcast ended. Refresh Services to select the next service.");
+		message->setText("Stream ended. Refresh to select another service.");
 	} else if (endRequested && !endWaiting) {
-		message->setText(
-			"Waiting for YouTube to confirm the broadcast ended. Use End YouTube Now to retry if needed.");
+		message->setText("Waiting for YouTube to end. Override to retry.");
 	} else if (live()) {
 		message->setText("YouTube broadcast is live.");
 	} else if (startRequested) {
@@ -327,11 +354,10 @@ void LiveControl::acceptStatus(const QJsonObject &body)
 		startRequested = false;
 		message->setText("YouTube has not confirmed live yet. Retry Start Streaming if needed.");
 	} else if (encoder.active() && encoderMatches()) {
-		message->setText(status["canStart"].toBool()
-					 ? "YouTube is ready. Click Start Streaming to go live."
-					 : "OBS is sending video. Waiting for YouTube to be ready...");
+		message->setText(status["canStart"].toBool() ? "Ready to start YouTube."
+							     : "Waiting for YouTube readiness.");
 	} else if (!starting) {
-		message->setText("Service loaded. Click Prestart to send OBS video to YouTube.");
+		message->setText("Ready to prestart.");
 	}
 	if (status["broadcast"].toObject()["enableAutoStart"].toBool() && !live() && !finished())
 		message->setText(
@@ -340,7 +366,7 @@ void LiveControl::acceptStatus(const QJsonObject &body)
 
 void LiveControl::prestart()
 {
-	if (!prepare->isEnabled())
+	if (!canPrestart())
 		return;
 	logEvent("prestart.requested");
 	// Re-read immediately before replacing OBS's streaming destination.
@@ -372,7 +398,7 @@ void LiveControl::prestart()
 
 void LiveControl::transition(const QString &action)
 {
-	if (!startStop->isEnabled())
+	if (!canTransition())
 		return;
 	logEvent(action == "start" ? "youtube.start.requested" : "youtube.end.requested",
 		 {{"delaySeconds", action == "end" ? endDelaySeconds : 0}});
@@ -382,8 +408,7 @@ void LiveControl::transition(const QString &action)
 		endRequested = true;
 		endWaiting = true;
 		endDelay.start();
-		message->setText(QString("Ending YouTube in %1 seconds. Use End YouTube Now to skip the wait.")
-					 .arg(endDelaySeconds));
+		message->setText(QString("Ending in %1s. Override to skip delay.").arg(endDelaySeconds));
 		render();
 		if (endDelaySeconds == 0)
 			endNow();
@@ -401,7 +426,7 @@ void LiveControl::endNow()
 		 {{"skippedDelay", endWaiting && endDelay.elapsed() < endDelaySeconds * 1000}});
 	endWaiting = false;
 	endRequested = true;
-	message->setText("Ending YouTube; waiting for confirmed completion before stopping OBS...");
+	message->setText("Waiting for YouTube to end; OBS stays on.");
 	request(controlPath() + "/end", "POST", [this](const QJsonObject &body) { acceptStatus(body); });
 }
 
@@ -429,29 +454,55 @@ void LiveControl::render()
 	const auto broadcast = status["broadcast"].toObject();
 	const auto stream = status["stream"].toObject();
 	services->setEnabled(!locked && !busy);
-	refresh->setText(serviceId.isEmpty() || finished() ? "Refresh Services" : "Refresh Status / Retry Connection");
+	refresh->setToolTip(serviceId.isEmpty() || finished() ? "Refresh services"
+							      : "Refresh status / retry connection");
+	services->setToolTip(services->currentText());
 	refresh->setEnabled(!busy && !baseUrl.isEmpty());
 	studio->setEnabled(validBrowserUrl(broadcast["studioLiveControlUrl"].toString()));
 	youtube->setEnabled(validBrowserUrl(broadcast["watchUrl"].toString()));
-	prepare->setEnabled(fresh && !busy && !active && !locked && !finished() && !serviceId.isEmpty() &&
-			    !stream["streamName"].toString().isEmpty() && !broadcast["enableAutoStart"].toBool());
-	startStop->setText(live() ? "Stop Streaming" : "Start Streaming");
-	startStop->setEnabled(fresh && !busy && !starting && !endRequested &&
-			      (live() ? status["canEnd"].toBool()
-				      : active && encoderMatches() && status["canStart"].toBool() && !startRequested &&
-						!endRequested));
+	QString primaryText = "Prestart";
+	if (endWaiting)
+		primaryText = QString("Ending in %1s").arg(qMax(0, endDelaySeconds - int(endDelay.elapsed() / 1000)));
+	else if (endRequested)
+		primaryText = "Waiting for YouTube to end";
+	else if (finished())
+		primaryText = "Stream ended";
+	else if (live())
+		primaryText = "End Streaming";
+	else if (startRequested)
+		primaryText = "Starting YouTube...";
+	else if (starting)
+		primaryText = "Starting OBS...";
+	else if (active && encoderMatches())
+		primaryText = status["canStart"].toBool() ? "Start Streaming" : "Waiting for YouTube...";
+	else if (busy)
+		primaryText = "Loading...";
+	primary->setText(primaryText);
+	primary->setEnabled(canPrestart() || canTransition());
 	cancel->setVisible(managed && !live() && !finished());
 	cancel->setEnabled(managed && fresh && !busy && !live() && !startRequested && !endRequested);
 	endOverride->setVisible(endRequested || live());
 	endOverride->setEnabled((endRequested || live()) && !busy && !finished());
 	stopOverride->setEnabled((active || starting) && (managed || encoderMatches()));
+	QAction *preferred = cancel->isEnabled()                          ? cancel
+			     : (endRequested && endOverride->isEnabled()) ? endOverride
+									  : stopOverride;
+	overrides->setDefaultAction(preferred);
+	const bool anyOverride = cancel->isEnabled() || endOverride->isEnabled() || stopOverride->isEnabled();
+	overrides->setEnabled(anyOverride);
+	if (!anyOverride)
+		overrides->setText("Overrides");
+	overrides->setToolTip("Override: " + preferred->text() + ". Use the arrow for other actions.");
+	endOverride->setText(endWaiting ? "End YouTube Now" : endRequested ? "Retry YouTube End" : "End YouTube Now");
 	summary->setText(status.isEmpty() ? QString()
-					  : QString("OBS: %1\nYouTube: %2\nEncoder: %3 (%4)")
+					  : QString("OBS: %1 | YouTube: %2")
 						    .arg(active     ? "streaming"
 							 : starting ? "starting"
 								    : "stopped",
-							 lifecycle(), stream["streamStatus"].toString(),
-							 stream["healthStatus"].toString()));
+							 lifecycle()));
+	summary->setToolTip(
+		QString("Encoder: %1 (%2)").arg(stream["streamStatus"].toString(), stream["healthStatus"].toString()));
+	summary->setVisible(!status.isEmpty());
 }
 
 void LiveControl::logEvent(const QString &name, QJsonObject details)
@@ -460,4 +511,45 @@ void LiveControl::logEvent(const QString &name, QJsonObject details)
 	details.insert("serviceTitle", services->currentText());
 	if (eventSink)
 		eventSink(name, details);
+}
+
+bool LiveControl::canPrestart() const
+{
+	const bool active = encoder.active();
+	const bool locked = starting || live() || startRequested || endRequested ||
+			    (active && (managed || encoderMatches()));
+	return featureEnabled && fresh && !busy && !active && !locked && !finished() && !serviceId.isEmpty() &&
+	       !status["stream"].toObject()["streamName"].toString().isEmpty() &&
+	       !status["broadcast"].toObject()["enableAutoStart"].toBool();
+}
+
+bool LiveControl::canTransition() const
+{
+	return featureEnabled && fresh && !busy && !starting && !endRequested &&
+	       (live() ? status["canEnd"].toBool()
+		       : encoder.active() && encoderMatches() && status["canStart"].toBool() && !startRequested);
+}
+
+void LiveControl::setServiceManagerEnabled(bool enabled)
+{
+	setVisible(enabled);
+	if (featureEnabled == enabled)
+		return;
+	featureEnabled = enabled;
+	if (enabled) {
+		encoderWatch.start();
+		return;
+	}
+	++generation; // Ignore in-flight replies and queued command retries.
+	poll.stop();
+	prestartTimeout.stop();
+	encoderWatch.stop();
+	busy = fresh = managed = starting = endRequested = startRequested = endWaiting = false;
+	pollingPaused = true;
+	status = {};
+	serviceId.clear();
+	baseUrl.clear();
+	for (auto *confirmation : findChildren<QMessageBox *>())
+		confirmation->reject();
+	render();
 }

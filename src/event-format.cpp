@@ -13,9 +13,10 @@ QJsonObject EventFormat::details(const QString &event, const QJsonObject &input)
 {
 	QJsonObject output;
 	// Keep useful, stable fields for later database storage, without transport metadata.
-	const QStringList fields{"serviceId", "serviceTitle", "serviceItem",  "slide",  "scene",
-				 "page",      "row",          "column",       "reason", "delaySeconds",
-				 "command",   "retry",        "skippedDelay", "message"};
+	const QStringList fields{"section",      "serviceDate",  "serviceKind", "elapsedMs",    "serviceId",
+				 "serviceTitle", "serviceItem",  "slide",       "scene",        "page",
+				 "row",          "column",       "reason",      "delaySeconds", "command",
+				 "retry",        "skippedDelay", "message"};
 	for (const auto &key : fields) {
 		if (!input.contains(key))
 			continue;
@@ -33,10 +34,18 @@ QJsonObject EventFormat::details(const QString &event, const QJsonObject &input)
 
 QString EventFormat::text(const QString &source, const QString &event, const QJsonObject &d)
 {
+	if (source == "camera-assist")
+		return "Camera Assist: " + event + " | " + d["scene"].toString();
 	const QString label = source == "openlp"      ? "OpenLP"
 			      : source == "companion" ? "Companion"
 			      : source == "obs"       ? "OBS"
 						      : "StreamingQATool";
+	if (event == "marker.appeared" || event == "marker.disappeared") {
+		QString data = d["section"].toString();
+		if (d.contains("serviceDate"))
+			data += " | " + d["serviceDate"].toString() + " " + d["serviceKind"].toString();
+		return "Marker " + QString(event == "marker.appeared" ? "appeared: " : "disappeared: ") + data;
+	}
 	if (event == "connection.state")
 		return label + ": " + d["state"].toString();
 	if (event.startsWith("slide."))
@@ -72,6 +81,10 @@ QString EventFormat::text(const QString &source, const QString &event, const QJs
 		return QString("YouTube: Retry %1 (%2/3)").arg(d["command"].toString()).arg(d["retry"].toInt());
 	if (event == "control.error")
 		return "Error: " + d["message"].toString();
+	if (event == "stream.interrupted")
+		return "Stream log closed: " + d["reason"].toString();
+	if (event == "ended")
+		return "StreamingQATool closed";
 	if (event == "started")
 		return "StreamingQATool started";
 	return label + ": " + event;
